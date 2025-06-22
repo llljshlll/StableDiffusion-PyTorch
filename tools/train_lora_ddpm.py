@@ -72,10 +72,21 @@ def train(args):
                  lora_rank=args.lora_rank,
                  lora_alpha=args.lora_alpha).to(device)
     if os.path.exists(args.pretrained_ckpt):
-        model.load_state_dict(torch.load(args.pretrained_ckpt, map_location=device))
+        state = torch.load(args.pretrained_ckpt, map_location=device, weights_only=True)
+        if ('class_emb.weight' in state and
+                state['class_emb.weight'].shape[0] != model.class_emb.weight.shape[0]):
+            ckpt_classes = state['class_emb.weight'].shape[0]
+            model_classes = model.class_emb.weight.shape[0]
+            if ckpt_classes < model_classes:
+                new_weight = torch.zeros_like(model.class_emb.weight)
+                new_weight[:ckpt_classes] = state['class_emb.weight']
+                state['class_emb.weight'] = new_weight
+        model.load_state_dict(state, strict=False)
     model.train()
 
     inject_lora(model, r=args.lora_rank, alpha=args.lora_alpha)
+    # Move newly injected LoRA layers to the training device
+    model.to(device)
 
 
     vae = None
@@ -89,7 +100,7 @@ def train(args):
             print('Loaded vae checkpoint')
             vae.load_state_dict(torch.load(os.path.join(train_config['task_name'],
                                                         train_config['vqvae_autoencoder_ckpt_name']),
-                                           map_location=device))
+                                           map_location=device, weights_only=True))
         else:
             raise Exception('VAE checkpoint not found and use_latents was disabled')
 
