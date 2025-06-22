@@ -309,3 +309,7 @@ During training and inference of ddpm following output will be saved
 
 
 
+
+### LoRA and Textual Inversion
+* `tools/train_lora_ddpm.py` can be used to fine tune a pretrained diffusion model with LoRA adapters. Pass the pretrained checkpoint with `--pretrained_ckpt`.
+* `tools/train_textual_inversion.py` allows learning a new token embedding for text conditioned models. Provide the placeholder token with `--token` and pretrained checkpoint with `--pretrained_ckpt`.
