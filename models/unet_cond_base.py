@@ -12,7 +12,7 @@ class Unet(nn.Module):
     Down blocks, Midblocks and Uplocks
     """
     
-    def __init__(self, im_channels, model_config):
+    def __init__(self, im_channels, model_config, use_lora=False, lora_rank=4, lora_alpha=1.0):
         super().__init__()
         self.down_channels = model_config['down_channels']
         self.mid_channels = model_config['mid_channels']
@@ -94,7 +94,10 @@ class Unet(nn.Module):
                                         num_layers=self.num_down_layers,
                                         attn=self.attns[i], norm_channels=self.norm_channels,
                                         cross_attn=self.text_cond,
-                                        context_dim=self.text_embed_dim))
+                                        context_dim=self.text_embed_dim,
+                                        use_lora=use_lora,
+                                        lora_rank=lora_rank,
+                                        lora_alpha=lora_alpha))
         
         self.mids = nn.ModuleList([])
         # Build the Midblocks
@@ -104,7 +107,10 @@ class Unet(nn.Module):
                                       num_layers=self.num_mid_layers,
                                       norm_channels=self.norm_channels,
                                       cross_attn=self.text_cond,
-                                      context_dim=self.text_embed_dim))
+                                      context_dim=self.text_embed_dim,
+                                      use_lora=use_lora,
+                                      lora_rank=lora_rank,
+                                      lora_alpha=lora_alpha))
                 
         self.ups = nn.ModuleList([])
         # Build the Upblocks
@@ -116,7 +122,10 @@ class Unet(nn.Module):
                             num_layers=self.num_up_layers,
                             norm_channels=self.norm_channels,
                             cross_attn=self.text_cond,
-                            context_dim=self.text_embed_dim))
+                            context_dim=self.text_embed_dim,
+                            use_lora=use_lora,
+                            lora_rank=lora_rank,
+                            lora_alpha=lora_alpha))
         
         self.norm_out = nn.GroupNorm(self.norm_channels, self.conv_out_channels)
         self.conv_out = nn.Conv2d(self.conv_out_channels, im_channels, kernel_size=3, padding=1)

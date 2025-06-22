@@ -1,5 +1,8 @@
+import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from utils.lora import LoRALinear
 
 
 def get_time_embedding(time_steps, temb_dim):
@@ -24,6 +27,47 @@ def get_time_embedding(time_steps, temb_dim):
     return t_emb
 
 
+class LoRAAttention(nn.Module):
+    """Multi-head attention with optional LoRA adapters."""
+
+    def __init__(self, embed_dim, num_heads, use_lora=False, r=4, alpha=1.0):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+
+        if use_lora:
+            self.q_proj = LoRALinear(self.q_proj, r=r, alpha=alpha)
+            self.k_proj = LoRALinear(self.k_proj, r=r, alpha=alpha)
+            self.v_proj = LoRALinear(self.v_proj, r=r, alpha=alpha)
+            self.out_proj = LoRALinear(self.out_proj, r=r, alpha=alpha)
+
+    def forward(self, hidden_states, context=None):
+        b, s, _ = hidden_states.shape
+        if context is None:
+            context = hidden_states
+        q = self.q_proj(hidden_states)
+        k = self.k_proj(context)
+        v = self.v_proj(context)
+
+        q = q.view(b, s, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(b, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(b, -1, self.num_heads, self.head_dim).transpose(1, 2)
+
+        attn = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        attn = F.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).contiguous().view(b, s, self.embed_dim)
+        out = self.out_proj(out)
+        return out
+
+
 class DownBlock(nn.Module):
     r"""
     Down conv block with attention.
@@ -34,7 +78,9 @@ class DownBlock(nn.Module):
     """
     
     def __init__(self, in_channels, out_channels, t_emb_dim,
-                 down_sample, num_heads, num_layers, attn, norm_channels, cross_attn=False, context_dim=None):
+                 down_sample, num_heads, num_layers, attn, norm_channels,
+                 cross_attn=False, context_dim=None,
+                 use_lora=False, lora_rank=4, lora_alpha=1.0):
         super().__init__()
         self.num_layers = num_layers
         self.down_sample = down_sample
@@ -78,9 +124,10 @@ class DownBlock(nn.Module):
                 [nn.GroupNorm(norm_channels, out_channels)
                  for _ in range(num_layers)]
             )
-            
+
             self.attentions = nn.ModuleList(
-                [nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                [LoRAAttention(out_channels, num_heads,
+                               use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
                  for _ in range(num_layers)]
             )
         
@@ -91,7 +138,8 @@ class DownBlock(nn.Module):
                  for _ in range(num_layers)]
             )
             self.cross_attentions = nn.ModuleList(
-                [nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                [LoRAAttention(out_channels, num_heads,
+                               use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
                  for _ in range(num_layers)]
             )
             self.context_proj = nn.ModuleList(
@@ -125,7 +173,7 @@ class DownBlock(nn.Module):
                 in_attn = out.reshape(batch_size, channels, h * w)
                 in_attn = self.attention_norms[i](in_attn)
                 in_attn = in_attn.transpose(1, 2)
-                out_attn, _ = self.attentions[i](in_attn, in_attn, in_attn)
+                out_attn = self.attentions[i](in_attn)
                 out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
                 out = out + out_attn
             
@@ -137,7 +185,7 @@ class DownBlock(nn.Module):
                 in_attn = in_attn.transpose(1, 2)
                 assert context.shape[0] == x.shape[0] and context.shape[-1] == self.context_dim
                 context_proj = self.context_proj[i](context)
-                out_attn, _ = self.cross_attentions[i](in_attn, context_proj, context_proj)
+                out_attn = self.cross_attentions[i](in_attn, context_proj)
                 out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
                 out = out + out_attn
             
@@ -239,7 +287,7 @@ class MidBlock(nn.Module):
             in_attn = out.reshape(batch_size, channels, h * w)
             in_attn = self.attention_norms[i](in_attn)
             in_attn = in_attn.transpose(1, 2)
-            out_attn, _ = self.attentions[i](in_attn, in_attn, in_attn)
+            out_attn = self.attentions[i](in_attn)
             out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
             out = out + out_attn
             
@@ -251,7 +299,7 @@ class MidBlock(nn.Module):
                 in_attn = in_attn.transpose(1, 2)
                 assert context.shape[0] == x.shape[0] and context.shape[-1] == self.context_dim
                 context_proj = self.context_proj[i](context)
-                out_attn, _ = self.cross_attentions[i](in_attn, context_proj, context_proj)
+                out_attn = self.cross_attentions[i](in_attn, context_proj)
                 out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
                 out = out + out_attn
                 
@@ -278,7 +326,8 @@ class UpBlock(nn.Module):
     """
     
     def __init__(self, in_channels, out_channels, t_emb_dim,
-                 up_sample, num_heads, num_layers, attn, norm_channels):
+                 up_sample, num_heads, num_layers, attn, norm_channels,
+                 use_lora=False, lora_rank=4, lora_alpha=1.0):
         super().__init__()
         self.num_layers = num_layers
         self.up_sample = up_sample
@@ -322,10 +371,11 @@ class UpBlock(nn.Module):
                     for _ in range(num_layers)
                 ]
             )
-            
+
             self.attentions = nn.ModuleList(
                 [
-                    nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                    LoRAAttention(out_channels, num_heads,
+                                 use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
                     for _ in range(num_layers)
                 ]
             )
@@ -364,7 +414,7 @@ class UpBlock(nn.Module):
                 in_attn = out.reshape(batch_size, channels, h * w)
                 in_attn = self.attention_norms[i](in_attn)
                 in_attn = in_attn.transpose(1, 2)
-                out_attn, _ = self.attentions[i](in_attn, in_attn, in_attn)
+                out_attn = self.attentions[i](in_attn)
                 out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
                 out = out + out_attn
         return out
@@ -381,7 +431,8 @@ class UpBlockUnet(nn.Module):
     """
     
     def __init__(self, in_channels, out_channels, t_emb_dim, up_sample,
-                 num_heads, num_layers, norm_channels, cross_attn=False, context_dim=None):
+                 num_heads, num_layers, norm_channels, cross_attn=False, context_dim=None,
+                 use_lora=False, lora_rank=4, lora_alpha=1.0):
         super().__init__()
         self.num_layers = num_layers
         self.up_sample = up_sample
@@ -429,7 +480,8 @@ class UpBlockUnet(nn.Module):
         
         self.attentions = nn.ModuleList(
             [
-                nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                LoRAAttention(out_channels, num_heads,
+                             use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
                 for _ in range(num_layers)
             ]
         )
@@ -441,7 +493,8 @@ class UpBlockUnet(nn.Module):
                  for _ in range(num_layers)]
             )
             self.cross_attentions = nn.ModuleList(
-                [nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                [LoRAAttention(out_channels, num_heads,
+                               use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
                  for _ in range(num_layers)]
             )
             self.context_proj = nn.ModuleList(
@@ -477,7 +530,7 @@ class UpBlockUnet(nn.Module):
             in_attn = out.reshape(batch_size, channels, h * w)
             in_attn = self.attention_norms[i](in_attn)
             in_attn = in_attn.transpose(1, 2)
-            out_attn, _ = self.attentions[i](in_attn, in_attn, in_attn)
+            out_attn = self.attentions[i](in_attn)
             out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
             out = out + out_attn
             # Cross Attention
@@ -492,7 +545,7 @@ class UpBlockUnet(nn.Module):
                 assert context.shape[0] == x.shape[0] and context.shape[-1] == self.context_dim,\
                     "Context shape does not match B,_,CONTEXT_DIM"
                 context_proj = self.context_proj[i](context)
-                out_attn, _ = self.cross_attentions[i](in_attn, context_proj, context_proj)
+                out_attn = self.cross_attentions[i](in_attn, context_proj)
                 out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
                 out = out + out_attn
         
