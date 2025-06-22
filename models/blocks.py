@@ -1,4 +1,5 @@
 import math
+import inspect
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -68,6 +69,17 @@ class LoRAAttention(nn.Module):
         return out
 
 
+def make_lora_attention(embed_dim, num_heads, use_lora=False, r=4, alpha=1.0):
+    """Create a LoRAAttention layer with backward compatibility."""
+    params = inspect.signature(LoRAAttention).parameters
+    if 'use_lora' in params:
+        return LoRAAttention(embed_dim, num_heads,
+                             use_lora=use_lora, r=r, alpha=alpha)
+    if 'r' in params:
+        return LoRAAttention(embed_dim, num_heads, r=r, alpha=alpha)
+    return LoRAAttention(embed_dim, num_heads)
+
+
 class DownBlock(nn.Module):
     r"""
     Down conv block with attention.
@@ -126,8 +138,10 @@ class DownBlock(nn.Module):
             )
 
             self.attentions = nn.ModuleList(
-                [LoRAAttention(out_channels, num_heads,
-                               use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
+                [make_lora_attention(out_channels, num_heads,
+                                     use_lora=use_lora,
+                                     r=lora_rank,
+                                     alpha=lora_alpha)
                  for _ in range(num_layers)]
             )
         
@@ -138,8 +152,10 @@ class DownBlock(nn.Module):
                  for _ in range(num_layers)]
             )
             self.cross_attentions = nn.ModuleList(
-                [LoRAAttention(out_channels, num_heads,
-                               use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
+                [make_lora_attention(out_channels, num_heads,
+                                     use_lora=use_lora,
+                                     r=lora_rank,
+                                     alpha=lora_alpha)
                  for _ in range(num_layers)]
             )
             self.context_proj = nn.ModuleList(
@@ -203,7 +219,9 @@ class MidBlock(nn.Module):
     3. Resnet block with time embedding
     """
     
-    def __init__(self, in_channels, out_channels, t_emb_dim, num_heads, num_layers, norm_channels, cross_attn=None, context_dim=None):
+    def __init__(self, in_channels, out_channels, t_emb_dim, num_heads, num_layers,
+                 norm_channels, cross_attn=None, context_dim=None,
+                 use_lora=False, lora_rank=4, lora_alpha=1.0):
         super().__init__()
         self.num_layers = num_layers
         self.t_emb_dim = t_emb_dim
@@ -246,7 +264,10 @@ class MidBlock(nn.Module):
         )
         
         self.attentions = nn.ModuleList(
-            [nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+            [make_lora_attention(out_channels, num_heads,
+                                 use_lora=use_lora,
+                                 r=lora_rank,
+                                 alpha=lora_alpha)
              for _ in range(num_layers)]
         )
         if self.cross_attn:
@@ -256,7 +277,10 @@ class MidBlock(nn.Module):
                  for _ in range(num_layers)]
             )
             self.cross_attentions = nn.ModuleList(
-                [nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                [make_lora_attention(out_channels, num_heads,
+                                     use_lora=use_lora,
+                                     r=lora_rank,
+                                     alpha=lora_alpha)
                  for _ in range(num_layers)]
             )
             self.context_proj = nn.ModuleList(
@@ -374,8 +398,10 @@ class UpBlock(nn.Module):
 
             self.attentions = nn.ModuleList(
                 [
-                    LoRAAttention(out_channels, num_heads,
-                                 use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
+                    make_lora_attention(out_channels, num_heads,
+                                       use_lora=use_lora,
+                                       r=lora_rank,
+                                       alpha=lora_alpha)
                     for _ in range(num_layers)
                 ]
             )
@@ -480,8 +506,10 @@ class UpBlockUnet(nn.Module):
         
         self.attentions = nn.ModuleList(
             [
-                LoRAAttention(out_channels, num_heads,
-                             use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
+                make_lora_attention(out_channels, num_heads,
+                                   use_lora=use_lora,
+                                   r=lora_rank,
+                                   alpha=lora_alpha)
                 for _ in range(num_layers)
             ]
         )
@@ -493,8 +521,10 @@ class UpBlockUnet(nn.Module):
                  for _ in range(num_layers)]
             )
             self.cross_attentions = nn.ModuleList(
-                [LoRAAttention(out_channels, num_heads,
-                               use_lora=use_lora, r=lora_rank, alpha=lora_alpha)
+                [make_lora_attention(out_channels, num_heads,
+                                     use_lora=use_lora,
+                                     r=lora_rank,
+                                     alpha=lora_alpha)
                  for _ in range(num_layers)]
             )
             self.context_proj = nn.ModuleList(
